@@ -59,6 +59,26 @@ class Zoom():
 		metadata.bind = engine
 		metadata.clear()
 
+		self.recording_upload = Table(
+			'recording_upload', 
+			metadata,
+			Column('id', Integer, primary_key=True),
+			Column('topic', String(512)),
+			Column('meeting_id', String(512)),
+			Column('recording_id', String(512)),
+			Column('meeting_uuid', String(512)),
+			# Column('meeting_link', String(512)),
+			Column('start_time', String(512)),
+			Column('file_name', String(512)),
+			Column('file_size', String(256)),
+			Column('cnt_files', Integer),
+			Column('recording_link', String(512)),
+			Column('folder_link', String(512)),
+			Column('status', String(256)),
+			Column('message', Text),
+			Column('run_at', String(256)),
+		)
+
 		self.upload_history = Table(
 			'recording_upload_history', 
 			metadata,
@@ -70,7 +90,7 @@ class Zoom():
 			# Column('meeting_link', String(512)),
 			Column('start_time', String(512)),
 			Column('file_name', String(512)),
-			Column('file_size', Integer),
+			Column('file_size', String(256)),
 			Column('cnt_files', Integer),
 			Column('recording_link', String(512)),
 			Column('folder_link', String(512)),
@@ -93,6 +113,13 @@ class Zoom():
 			Column('status', Boolean),
 			Column('is_deleted', Boolean),
 			Column('run_at', String(256)),
+		)
+
+		self.alert_email = Table(
+			'alert_email', 
+			metadata,
+			Column('id', Integer, primary_key=True),
+			Column('cc_emails', Text)
 		)
 		metadata.create_all()
 
@@ -260,13 +287,17 @@ class Zoom():
 		}
 
 	def save_recordings(self):
+		# read ids which were not failed last time
+		res = self.connection.execute('SELECT * FROM recording_upload WHERE status!="error";')
+		existing_ids = [dict(r) for r in res]	
+
 		insert_data = []
 		delete_data = []
 		for meeting in self.meetings:
 			topic = meeting['topic']
 			start_time = datetime.strptime(meeting['start_time'], '%Y-%m-%dT%H:%M:%SZ').strftime('%b %d %Y, %H:%M:%S')
 			for recording in meeting['recording_files']:
-				if recording.get('recording_type') != None:
+				if recording.get('recording_type') != None and not recording['id'] in existing_ids:
 					recording_type = ' '.join([d.capitalize() for d in recording['recording_type'].split('_')])
 					file_type = recording["file_type"]
 					file_name = f'{topic} {recording_type}.{file_type}'
@@ -285,24 +316,33 @@ class Zoom():
 					delete_data.append(recording['id'])
 
 		if delete_data:
-			delete_query = 'DELETE FROM recording_upload_history WHERE'
+			delete_query = 'DELETE FROM recording_upload WHERE'
 			for _id in delete_data:
-				delete_query += f' recording_id="{_id}" AND'
+				if not _id in existing_ids:
+					delete_query += f' recording_id="{_id}" AND'
 
 			delete_query = delete_query[:-3]
-			print(delete_query)
 			self.connection.execute(delete_query)
 
 		if insert_data:
-			self.connection.execute(self.upload_history.insert(), insert_data)
+			self.connection.execute(self.recording_upload.insert(), insert_data)
 
 	def update_recording(self, recording_id, status, message=None, run_at=datetime.now().strftime('%m/%d/%Y %H:%M:%S')):
+		# update the data in recording_upload_history table
 		query = "UPDATE `recording_upload_history` SET `status`=%s, `message`=%s, `run_at`=%s WHERE `recording_id`=%s"
 		self.connection.execute(query, (status, message, run_at, recording_id))
 
-	def update_recording1(self, data):
-		update_statement = self.upload_history.update().where(self.upload_history.c.recording_id == data['recording_id']).values(data)
+		# update data in recording_upload table for today
+		query = "UPDATE `recording_upload` SET `status`=%s, `message`=%s, `run_at`=%s WHERE `recording_id`=%s"
+		self.connection.execute(query, (status, message, run_at, recording_id))
 
+	def update_recording1(self, data):
+		# update the data in recording_upload_history table
+		update_statement = self.upload_history.update().where(self.upload_history.c.recording_id == data['recording_id']).values(data)
+		self.connection.execute(update_statement)
+
+		# update data in recording_upload table for today
+		update_statement = self.recording_upload.update().where(self.recording_upload.c.recording_id == data['recording_id']).values(data)
 		self.connection.execute(update_statement)
 
 	def list_all_recordings(self):
@@ -389,15 +429,19 @@ class Zoom():
 	def update_upload_history(self, meeting, recording_id, file_name, file_type, folder_id, file_id, status=True):
 		recording_link = f'https://drive.google.com/file/d/{file_id}/view?usp=sharing'
 		folder_link = f'https://drive.google.com/drive/folders/{folder_id}'
+		start_date_time = datetime.strptime(meeting['start_time'], '%Y-%m-%dT%H:%M:%SZ').strftime('%b %d %Y')
 		update_data = {
 			'meeting_id': meeting['id'],
 			'recording_id': recording_id,
 			'status': 'completed',
+			'start_time': start_date_time,
 			'recording_link': recording_link,
 			'folder_link': folder_link,
 			'run_at': datetime.now().strftime('%m/%d/%Y %H:%M:%S')
 		}
 		self.update_recording1(update_data)
+
+		self.recording_data_to_insert.append(update_data)
 
 	def get_meeting_status(self, meeting):
 		cnt = 0
@@ -415,8 +459,7 @@ class Zoom():
 	def update_db(self, meeting):
 		if self.recording_data_to_insert:
 			try:
-				self.connection.execute(self.upload_history.insert(), self.recording_data_to_insert)
-				is_deleted = self.delete_uploaded_meeting(meeting)
+				is_deleted = self.delete_uploaded_meeting_from_cloud(meeting)
 				self.update_upload_status(meeting, is_deleted)
 			except Exception as E:
 				logger.warning(str(E))
@@ -440,7 +483,11 @@ class Zoom():
 
 			self.drive.clear_old_recordings(meeting, self.recording_data_to_insert)
 
-	def delete_uploaded_meeting(self, meeting):
+	def delete_success_meeting_from_recording_upload(self, meeting):
+		query = f"""DELETE FROM recording_upload WHERE meeting_id='{meeting["id"]}'"""
+		self.connection.execute(query)
+
+	def delete_uploaded_meeting_from_cloud(self, meeting):
 		logger.info(f'--- delete meeting after uploading {meeting["uuid"]}')
 		status = self.get_meeting_status(meeting)
 
@@ -518,7 +565,7 @@ class Zoom():
 			for recording in meeting['recording_files']:
 				total_size += recording.get('file_size', 0)
 
-			return total_size >= size*1024*1024 # and total_size <= 10*1024*1024 # and total_size < 200*1024*1024
+			return total_size >= size*1024 and total_size <= 10*1024*1024 # and total_size < 200*1024*1024
 		except Exception as E:
 			logger.warning(str(E))
 
@@ -582,7 +629,6 @@ class Zoom():
 
 							logger.info(f"*** before uploading in meeting {meeting['id']}, topic {topic} created folder {folder_name} id: {folder_id} file {file_name}")
 							self.update_recording(recording['id'], 'uploading')
-							file_id = None
 							file_id = self.drive.upload_file(temporary_file_name, file_name, file_type, vid, folder_id)
 							if not file_id:
 								status = 'error'
@@ -600,7 +646,7 @@ class Zoom():
 						logger.warning(message)
 						self.update_recording(recording['id'], 'error', message)
 
-					if folder_id:
+					if folder_id and file_id:
 						self.update_upload_history(meeting, recording['id'], file_name, file_type, folder_id, file_id, status)
 					else:
 						# for some reason topic was changed so cannot find out drive link
@@ -624,6 +670,7 @@ class Zoom():
 				self.recording_data_to_insert = []
 				self._upload_recording(meeting)
 				self.build_report_to_admin(meeting)
+				self.delete_success_meeting_from_recording_upload(meeting)
 				self.update_db(meeting)
 
 	def create_recurring_zoom_meetings(self, account, start_date_time, end_date_time, duration, dow, class_name):

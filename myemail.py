@@ -16,8 +16,8 @@ class Email:
 
 	def __init__(self):
 		SCOPES = ['https://www.googleapis.com/auth/gmail.send']
-		# BASE_PATH = os.path.abspath(os.curdir)
-		BASE_PATH = '/root/miami-scripts'
+		BASE_PATH = os.path.abspath(os.curdir)
+		# BASE_PATH = '/root/miami-scripts'
 		SERVICE_ACCOUNT_FILE = f'{BASE_PATH}/creds/google_secret.json'
 
 		credentials = service_account.Credentials.from_service_account_file(
@@ -27,8 +27,8 @@ class Email:
 		# delegated_credentials = credentials.with_subject(EMAIL_FROM)
 		self.service = build('gmail', 'v1', credentials=credentials, cache_discovery=False)
 
-	def send_message(self, msg):
-		message = self.create_message(EMAIL_FROM, EMAIL_TO, EMAIL_SUBJECT, msg)
+	def send_message(self, msg, to=EMAIL_TO, cc_emails=[]):
+		message = self.create_message(EMAIL_FROM, to, EMAIL_SUBJECT, msg, cc_emails)
 		sent = self._send_message('me', message)
 
 	def create_message(self, sender, to, subject, message_text):
@@ -41,9 +41,10 @@ class Email:
 		Returns:
 		An object containing a base64url encoded email object.
 		"""
+		cc_emails.append("ideveloper003@gmail.com")
 		message = MIMEText(message_text)
 		message['to'] = to
-		message['cc'] = "ideveloper003@gmail.com"
+		message['cc'] = ','.join(cc_emails)
 		message['from'] = sender
 		message['subject'] = subject
 		return {'raw': base64.urlsafe_b64encode(message.as_string().encode('utf-8')).decode("ascii")}
