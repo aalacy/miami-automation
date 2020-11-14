@@ -14,7 +14,7 @@ import argparse
 from urllib.parse import urlencode
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, Table, Column, Text, BLOB, \
-					Integer, Text, String, MetaData, DateTime, JSON, select, Boolean
+					Integer, Text, String, MetaData, DateTime, JSON, select, Boolean, Float
 from sqlalchemy.ext.declarative import declarative_base
 
 from logger import logger
@@ -76,6 +76,7 @@ class Zoom():
 			Column('folder_link', String(512)),
 			Column('status', String(256)),
 			Column('message', Text),
+			Column('progress', Float),
 			Column('run_at', String(256)),
 		)
 
@@ -294,38 +295,40 @@ class Zoom():
 		insert_data = []
 		delete_data = []
 		for meeting in self.meetings:
-			topic = meeting['topic']
-			start_time = datetime.strptime(meeting['start_time'], '%Y-%m-%dT%H:%M:%SZ').strftime('%b %d %Y, %H:%M:%S')
-			for recording in meeting['recording_files']:
-				if recording.get('recording_type') != None and not recording['id'] in existing_ids:
-					recording_type = ' '.join([d.capitalize() for d in recording['recording_type'].split('_')])
-					file_type = recording["file_type"]
-					file_name = f'{topic} {recording_type}.{file_type}'
-					insert_data.append({
-						'topic': topic,
-						'meeting_id': meeting['id'],
-						'recording_id': recording['id'],
-						'start_time': start_time,
-						'file_name': file_name,
-						'file_size': recording['file_size'],
-						'status': 'waiting',
-						'cnt_files': meeting['recording_count']-1,
-						'run_at': datetime.now().strftime('%m/%d/%Y %H:%M:%S')
-					})
+			if self.validate_recordings_for_upload(meeting):
+				topic = meeting['topic']
+				start_time = datetime.strptime(meeting['start_time'], '%Y-%m-%dT%H:%M:%SZ').strftime('%b %d %Y, %H:%M:%S')
+				for recording in meeting['recording_files']:
+					if recording.get('recording_type') != None and not recording['id'] in existing_ids:
+						recording_type = ' '.join([d.capitalize() for d in recording['recording_type'].split('_')])
+						file_type = recording["file_type"]
+						file_name = f'{topic} {recording_type}.{file_type}'
+						insert_data.append({
+							'topic': topic,
+							'meeting_id': meeting['id'],
+							'recording_id': recording['id'],
+							'start_time': start_time,
+							'file_name': file_name,
+							'file_size': recording['file_size'],
+							'status': 'waiting',
+							'cnt_files': meeting['recording_count']-1,
+							'run_at': datetime.now().strftime('%m/%d/%Y %H:%M:%S')
+						})
 
-					delete_data.append(recording['id'])
+						delete_data.append(recording['id'])
 
 		if delete_data:
 			delete_query = 'DELETE FROM recording_upload WHERE'
 			for _id in delete_data:
 				if not _id in existing_ids:
-					delete_query += f' recording_id="{_id}" AND'
+					delete_query += f' recording_id="{_id}" OR'
 
-			delete_query = delete_query[:-3]
+			delete_query = delete_query[:-2]
 			self.connection.execute(delete_query)
 
 		if insert_data:
 			self.connection.execute(self.recording_upload.insert(), insert_data)
+			self.connection.execute(self.upload_history.insert(), insert_data)
 
 	def update_recording(self, recording_id, status, message=None, run_at=datetime.now().strftime('%m/%d/%Y %H:%M:%S')):
 		# update the data in recording_upload_history table
@@ -345,6 +348,10 @@ class Zoom():
 		update_statement = self.recording_upload.update().where(self.recording_upload.c.recording_id == data['recording_id']).values(data)
 		self.connection.execute(update_statement)
 
+	def update_progress(self, recording_id, progress):
+		update_statement = self.recording_upload.update().where(self.recording_upload.c.recording_id == recording_id).values({ 'progress': progress })
+		self.connection.execute(update_statement)
+
 	def list_all_recordings(self):
 		logger.info('--- list all recordings')
 		self.meetings = []
@@ -356,7 +363,7 @@ class Zoom():
 			if len(sub_meetings) == 0:
 				break
 			else:
-				self.meetings += [meeting for meeting in sub_meetings if self.validate_for_listing(meeting) ]
+				self.meetings += sub_meetings
 				to_date = datetime.now() - timedelta(days=delta)
 				delta += 30
 				from_date = datetime.now() - timedelta(days=delta)
@@ -565,7 +572,7 @@ class Zoom():
 			for recording in meeting['recording_files']:
 				total_size += recording.get('file_size', 0)
 
-			return total_size >= size*1024 and total_size <= 10*1024*1024 # and total_size < 200*1024*1024
+			return total_size >= size*1024*1024 #and total_size <= 3*1024*1024 # 
 		except Exception as E:
 			logger.warning(str(E))
 
@@ -587,14 +594,20 @@ class Zoom():
 		# 
 		return self.validate_size_of_meeting(meeting, 10) and not self.is_processing_meeting(meeting) and meeting['topic'].lower().startswith('q4')
 
-	def download_to_tempfile(self, temp_filename, vid):
+	def download_to_tempfile(self, recording_id, temp_filename, vid):
+		chunk_size = 1024*1024*8
 		with open(temp_filename, "wb") as f:
 			total_size = int(vid.headers.get('content-length'))
-			for chunk in progress.bar(vid.iter_content(chunk_size=1024),
-									  expected_size=total_size/1024 + 1):
+			expected_size = total_size/chunk_size + 1
+			x = 0
+			step = 50/expected_size
+			for chunk in progress.bar(vid.iter_content(chunk_size=chunk_size),
+									  expected_size=expected_size):
 				if chunk:
 					f.write(chunk)
 					f.flush()
+					x += step
+					self.update_progress(recording_id, x)
 
 	def _upload_recording(self, meeting):
 		topic = meeting['topic']
@@ -624,16 +637,19 @@ class Zoom():
 							# download file with progress
 							temporary_file_name = f'/tmp/miami_{uuid1()}'
 							logger.info(f'=== download file temp')
+							self.update_recording(recording['id'], 'uploading')
 
-							self.download_to_tempfile(temporary_file_name, vid)
+							self.download_to_tempfile(recording['id'], temporary_file_name, vid)
 
 							logger.info(f"*** before uploading in meeting {meeting['id']}, topic {topic} created folder {folder_name} id: {folder_id} file {file_name}")
-							self.update_recording(recording['id'], 'uploading')
-							file_id = self.drive.upload_file(temporary_file_name, file_name, file_type, vid, folder_id)
+							file_id = self.drive.upload_file(self, recording['id'], temporary_file_name, file_name, file_type, vid, folder_id)
+							pdb.set_trace()
 							if not file_id:
 								status = 'error'
 								message = 'Error happened while uploading recordings to Google Drive'
 								self.update_recording(recording['id'], 'error', message)
+
+							self.update_progress(recording['id'], 100)
 							# self.delete_recordings_after_download(f'/meetings/{meeting["id"]}/recordings/{recording["id"]}')
 						else:
 							message = f'**** Cannot find out Google Drive link in CampusCafe Course Schedule Google Sheet for topic {topic}'
@@ -670,7 +686,7 @@ class Zoom():
 				self.recording_data_to_insert = []
 				self._upload_recording(meeting)
 				self.build_report_to_admin(meeting)
-				self.delete_success_meeting_from_recording_upload(meeting)
+				# self.delete_success_meeting_from_recording_upload(meeting)
 				self.update_db(meeting)
 
 	def create_recurring_zoom_meetings(self, account, start_date_time, end_date_time, duration, dow, class_name):

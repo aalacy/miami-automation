@@ -4,6 +4,7 @@ from googleapiclient.http import MediaIoBaseUpload
 from io import BytesIO
 import os
 import pdb
+import sys
 from base64 import b64decode
 from clint.textui import progress
 
@@ -66,8 +67,8 @@ class GDrive:
 
     def __init__(self):
         # OAuth2 using service key
-        BASE_PATH = os.path.abspath(os.curdir)
-        # BASE_PATH = '/root/miami-scripts'
+        # BASE_PATH = os.path.abspath(os.curdir)
+        BASE_PATH = '/root/miami-scripts'
         self.credentials = service_account.Credentials.from_service_account_file(
             f'{BASE_PATH}/creds/google_secret.json',
             scopes=G_DRIVE_SCOPES,
@@ -121,7 +122,7 @@ class GDrive:
         except Exception as E:
             logger.warning(str(E))
 
-    def upload_file(self, temporary_file_name, filename, file_type, vid, parent_id):
+    def upload_file(self, zoom, recording_id, temporary_file_name, filename, file_type, vid, parent_id):
         total_size = int(vid.headers.get('content-length'))
         file_id = None
         mimetype = ""
@@ -139,13 +140,23 @@ class GDrive:
             mimetype = 'text/vtt'
 
         with open(temporary_file_name, 'rb') as temporary_file:
-            chunk_size = 1024*1024
+            chunk_size = 1024*1024*8
             # file_bytes = BytesIO(vid.content)
             media = MediaIoBaseUpload(temporary_file, mimetype, resumable=True, chunksize=chunk_size)
             body = { "name": filename, "parents": [parent_id], "mimetype": mimetype }
-            res = self.drive_service.files().create(body=body, media_body=media, fields='id').execute()
+            request = self.drive_service.files().create(body=body, media_body=media, fields='id')
+            response = None
+            while response is None:
+                status, response = request.next_chunk()
+                if status:
+                    # sys.stdout.write("Uploaded %d%%." % int(status.progress() * 100))
+                    progress = 50 + status.progress() * 50
+                    zoom.update_progress(recording_id, progress)
+                    # pass
+
+            media.stream().close()
             os.remove(temporary_file_name)
-            file_id = res.get('id')
+            file_id = response.get('id')
 
             logger.info(f'**** uploaded file {filename} in drive folder_id {parent_id}')
             
