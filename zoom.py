@@ -643,7 +643,6 @@ class Zoom():
 
 							logger.info(f"*** before uploading in meeting {meeting['id']}, topic {topic} created folder {folder_name} id: {folder_id} file {file_name}")
 							file_id = self.drive.upload_file(self, recording['id'], temporary_file_name, file_name, file_type, vid, folder_id)
-							pdb.set_trace()
 							if not file_id:
 								status = 'error'
 								message = 'Error happened while uploading recordings to Google Drive'

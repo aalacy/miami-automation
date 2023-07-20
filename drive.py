@@ -15,33 +15,12 @@ G_DRIVE_SCOPES = [
     'https://www.googleapis.com/auth/drive',
     'https://www.googleapis.com/auth/drive.file'
 ]
-GSUITE_USER_EMAIL = 'it@miamiadschool.com'
+GSUITE_USER_EMAIL = ''
 G_DRIVE_FOLDER_ID = '1dcI6AN_IidAT20BXXQYBv1Oxih0DKQFw'
 G_DRIVE_FOLDER = 'https://drive.google.com/drive/folders/0AK09kp6LWV7OUk9PVA'
-G_DRIVE_MANAGER_EMAILS = [
-    'pippa@miamiadschool.com',
-    'julie@miamiadschool.com',
-    'manolo@miamiadschool.com',
-    'stephanie@miamiadschool.com',
-    'z@miamiadschool.com',
-    'zoom-recordings-to-drive@zoom-recordings-to-drive.iam.gserviceaccount.com'
-]
-G_DRIVE_CONTRIBUTER_EMAILS = [
-    'pippa@miamiadschool.com',
-    'julie@miamiadschool.com',
-    'manolo@miamiadschool.com',
-    'stephanie@miamiadschool.com',
-    'z@miamiadschool.com',
-    'zoom-recordings-to-drive@zoom-recordings-to-drive.iam.gserviceaccount.com'
-]
-G_DRIVE_VIEWER_EMAILS = [
-    'pippa@miamiadschool.com',
-    'julie@miamiadschool.com',
-    'manolo@miamiadschool.com',
-    'stephanie@miamiadschool.com',
-    'z@miamiadschool.com',
-    'zoom-recordings-to-drive@zoom-recordings-to-drive.iam.gserviceaccount.com'
-]
+G_DRIVE_MANAGER_EMAILS = []
+G_DRIVE_CONTRIBUTER_EMAILS = []
+G_DRIVE_VIEWER_EMAILS = []
 
 # folders
 ADMIN_FOLDER = 'Administration'
